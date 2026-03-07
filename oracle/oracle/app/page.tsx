@@ -6,7 +6,7 @@ import { studionet } from "genlayer-js/chains"
 
 // ── CONFIG ─────────────────────────────────────────────────────────────────
 // Replace with your deployed contract address after deploying contract.py
-const CONTRACT_ADDRESS = "0xYOUR_CONTRACT_ADDRESS_HERE" as `0x${string}`
+const CONTRACT_ADDRESS = "0xFCF86E4DB15Ce3CfB2196292A5271B53c9A3157D" as `0x${string}`
 
 const account = createAccount()
 const client = createClient({ chain: studionet, account })
