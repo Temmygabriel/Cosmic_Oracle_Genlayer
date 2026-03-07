@@ -5,7 +5,6 @@ import { createClient, createAccount } from "genlayer-js"
 import { studionet } from "genlayer-js/chains"
 
 // ── CONFIG ─────────────────────────────────────────────────────────────────
-// Replace with your deployed contract address after deploying contract.py
 const CONTRACT_ADDRESS = "0xFCF86E4DB15Ce3CfB2196292A5271B53c9A3157D" as `0x${string}`
 
 const account = createAccount()
@@ -64,12 +63,10 @@ export default function Home() {
 
   const selectedSign = SIGNS.find((s) => s.name === sign)
 
-  // Load total count and recent readings on mount
   useEffect(() => {
     loadStats()
   }, [])
 
-  // Elapsed timer while waiting
   useEffect(() => {
     if (phase === "waiting") {
       startTimeRef.current = Date.now()
@@ -112,7 +109,7 @@ export default function Home() {
     setPhase("submitting")
 
     try {
-      // ── SPEED TRICK 1: leaderOnly=true skips full validator consensus ──
+      // leaderOnly=true: only the leader node runs the AI — much faster
       const hash = await client.writeContract({
         address: CONTRACT_ADDRESS,
         functionName: "ask_oracle",
@@ -123,41 +120,52 @@ export default function Home() {
       setTxHash(String(hash))
       setPhase("waiting")
 
-      // ── SPEED TRICK 2: poll get_total every 4s until it increments ──
-      // Much faster than waitForTransactionReceipt with FINALIZED status
-      const startTotal = totalReadings ?? 0
-      let attempts = 0
-      while (attempts < 40) {
-        await new Promise((r) => setTimeout(r, 4000))
-        attempts++
-        try {
-          const newTotal = Number(
-            await client.readContract({
-              address: CONTRACT_ADDRESS,
-              functionName: "get_total",
-              args: [],
-            })
-          )
-          if (newTotal > startTotal) {
-            // Fetch the latest fortune
-            const raw = await client.readContract({
-              address: CONTRACT_ADDRESS,
-              functionName: "get_fortune",
-              args: [newTotal],
-            })
-            const parsed: Fortune =
-              typeof raw === "string" ? JSON.parse(raw) : (raw as Fortune)
-            setFortune(parsed)
-            setTotalReadings(newTotal)
-            setPhase("revealed")
-            loadStats()
-            return
-          }
-        } catch (_) {}
+      // Wait for ACCEPTED (not FINALIZED) — hits in ~10-20s with leaderOnly
+      // retries=60 x interval=3000ms = 3 minutes max
+      const receipt = await (client as any).waitForTransactionReceipt({
+        hash: hash,
+        status: "ACCEPTED",
+        retries: 60,
+        interval: 3000,
+      })
+
+      // Try reading fortune directly from the receipt leader data (fastest path)
+      let parsed: Fortune | null = null
+      try {
+        const leaderReceipt = (receipt as any)?.consensus_data?.leader_receipt
+        const returnVal = leaderReceipt?.eq_outputs?.leader?.["0"]
+        if (returnVal) {
+          parsed = typeof returnVal === "string" ? JSON.parse(returnVal) : returnVal
+        }
+      } catch (_) {}
+
+      // Fallback: read from contract storage if receipt didn't contain it
+      if (!parsed) {
+        const newTotal = Number(
+          await client.readContract({
+            address: CONTRACT_ADDRESS,
+            functionName: "get_total",
+            args: [],
+          })
+        )
+        const raw = await client.readContract({
+          address: CONTRACT_ADDRESS,
+          functionName: "get_fortune",
+          args: [newTotal],
+        })
+        parsed = typeof raw === "string" ? JSON.parse(raw) : (raw as Fortune)
+        setTotalReadings(newTotal)
       }
 
-      setError("The stars are silent... TX was submitted but timed out. Refresh and check your fortune.")
-      setPhase("idle")
+      if (parsed) {
+        setFortune(parsed)
+        setTotalReadings((t) => (t ?? 0) + 1)
+        setPhase("revealed")
+        loadStats()
+      } else {
+        throw new Error("Could not read fortune from the cosmos.")
+      }
+
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
       setPhase("idle")
@@ -338,7 +346,7 @@ export default function Home() {
                 </div>
               )}
               <div style={css.waitHint}>
-                This usually takes 30–60 seconds. Hang tight ✨
+                This usually takes 10–30 seconds. Hang tight ✨
               </div>
             </div>
           )}
